@@ -18,6 +18,8 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import os
+
 import collections
 import random
 import tokenization
@@ -41,10 +43,6 @@ flags.DEFINE_bool(
     "do_lower_case", True,
     "Whether to lower case the input text. Should be True for uncased "
     "models and False for cased models.")
-
-flags.DEFINE_bool(
-    "do_whole_word_mask", False,
-    "Whether to use whole word masking rather than per-WordPiece masking.")
 
 flags.DEFINE_integer("max_seq_length", 128, "Maximum sequence length.")
 
@@ -374,18 +372,8 @@ def create_masked_lm_predictions(tokens, masked_lm_prob,
   for index_set in cand_indexes:
     if len(masked_lms) >= num_to_predict:
       break
-    # If adding a whole-word mask would exceed the maximum number of
-    # predictions, then just skip this candidate.
-    if len(masked_lms) + len(index_set) > num_to_predict:
-      continue
-    is_any_index_covered = False
-    for index in index_set:
       if index in covered_indexes:
-        is_any_index_covered = True
-        break
-    if is_any_index_covered:
       continue
-    for index in index_set:
       covered_indexes.add(index)
 
       masked_token = None
@@ -432,14 +420,30 @@ def truncate_seq_pair(tokens_a, tokens_b, max_num_tokens, rng):
     else:
       trunc_tokens.pop()
 
+def get_filelist(dir_, filelist):
+  new_dir = dir_
+  if os.path.isfile(dir_):
+    filelist.append(dir_)
+  elif os.path.isdir(dir_):
+    for s in os.listdir(dir_):
+      new_dir = os.path.join(dir_, s)
+      get_filelist(new_dir, filelist)
+
+  return filelist
 
 def main(_):
   tf.logging.set_verbosity(tf.logging.INFO)
 
   tokenizer = tokenization.FullTokenizer(
       vocab_file=FLAGS.vocab_file, do_lower_case=FLAGS.do_lower_case)
-
+  
   input_files = []
+  if '*.txt' in FLAGS.input_file:
+    input_dir = FLAGS.input_file[:-5]
+    tf.logging.info("*** Reading from dir %s ***" % input_dir)
+    input_files = get_filelist(input_dir, [])
+    tf.logging.info("*** Number of files: %d ***" % len(input_files))
+
   for input_pattern in FLAGS.input_file.split(","):
     input_files.extend(tf.gfile.Glob(input_pattern))
 

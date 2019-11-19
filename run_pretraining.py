@@ -18,16 +18,37 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from tensorflow.core.protobuf import rewriter_config_pb2
+
 import os
 import modeling
 import optimization
 import tensorflow as tf
+import time
+import node_time_util
+
+# from memory_saving_gradients import gradients
+# import memory_saving_gradients
+# monkey patch tf.gradients to point to our custom version, with automatic checkpoint selection
+# tf.__dict__["gradients"] = memory_saving_gradients.gradients_memory
+# tf.__dict__["gradients"] = memory_saving_gradients.gradients_speed
 
 flags = tf.flags
 
 FLAGS = flags.FLAGS
 
 ## Required parameters
+
+flags.DEFINE_bool("lognode_time", False, "Whether to record runmetadata.")
+
+flags.DEFINE_bool("openai_opt", False, "Whether to use openai optimizer")
+
+flags.DEFINE_string(
+    "memory_optimization", "NO_MEM_OPT",
+    "The config to apply what memory optimization option")
+
+flags.DEFINE_bool("allow_growth", False, "Wheter to enable gpu_allow_growth")
+
 flags.DEFINE_string(
     "bert_config_file", None,
     "The config json file corresponding to the pre-trained BERT model. "
@@ -408,6 +429,12 @@ def main(_):
 
   if not FLAGS.do_train and not FLAGS.do_eval:
     raise ValueError("At least one of `do_train` or `do_eval` must be True.")
+   
+  if FLAGS.openai_opt:
+    import memory_saving_gradients
+    print("[BERT]:Use OpenAI RECOMPUTE OPTIMIZE")
+    tf.__dict__["gradients"] = memory_saving_gradients.gradients_memory
+    # tf.__dict__["gradients"] = memory_saving_gradients.gradients_speed 
 
   bert_config = modeling.BertConfig.from_json_file(FLAGS.bert_config_file)
 
@@ -427,7 +454,31 @@ def main(_):
         FLAGS.tpu_name, zone=FLAGS.tpu_zone, project=FLAGS.gcp_project)
 
   is_per_host = tf.contrib.tpu.InputPipelineConfig.PER_HOST_V2
+
+  session_config = tf.ConfigProto()
+  session_config.graph_options.rewrite_options.meta_optimizer_iterations = rewriter_config_pb2.RewriterConfig.ONE
+  if FLAGS.memory_optimization == "SWAPPING_HEURISTICS":
+    print("[BERT]: Use SWAPPING_HEURISTICS")
+    session_config.graph_options.rewrite_options.memory_optimization = (
+        rewriter_config_pb2.RewriterConfig.SWAPPING_HEURISTICS)
+  if FLAGS.memory_optimization == "RECOMPUTATION_HEURISTICS":
+    print("[BERT]: Use RECOMPUTATION_HEURISTICS")
+    session_config.graph_options.rewrite_options.memory_optimization = (
+        rewriter_config_pb2.RewriterConfig.RECOMPUTATION_HEURISTICS)
+  if FLAGS.memory_optimization == "HEURISTICS":
+    print("[BERT]: Use HEURISTICS")
+    session_config.graph_options.rewrite_options.memory_optimization = (
+        rewriter_config_pb2.RewriterConfig.HEURISTICS)
+  if FLAGS.memory_optimization == "NO_MEM_OPT":
+    print("[BERT]: Use NO_MEM_OPT")
+    session_config.graph_options.rewrite_options.memory_optimization = (
+        rewriter_config_pb2.RewriterConfig.NO_MEM_OPT)
+
+  if FLAGS.allow_growth:
+    session_config.gpu_options.allow_growth = True
+
   run_config = tf.contrib.tpu.RunConfig(
+      session_config=session_config,
       cluster=tpu_cluster_resolver,
       master=FLAGS.master,
       model_dir=FLAGS.output_dir,
@@ -454,7 +505,7 @@ def main(_):
       config=run_config,
       train_batch_size=FLAGS.train_batch_size,
       eval_batch_size=FLAGS.eval_batch_size)
-
+  
   if FLAGS.do_train:
     tf.logging.info("***** Running training *****")
     tf.logging.info("  Batch size = %d", FLAGS.train_batch_size)
@@ -463,8 +514,21 @@ def main(_):
         max_seq_length=FLAGS.max_seq_length,
         max_predictions_per_seq=FLAGS.max_predictions_per_seq,
         is_training=True)
-    estimator.train(input_fn=train_input_fn, max_steps=FLAGS.num_train_steps)
-
+    if FLAGS.lognode_time:
+      run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
+      run_metadata=tf.RunMetadata()
+      start = time.time()
+      estimator.train(input_fn=train_input_fn, max_steps=FLAGS.num_train_steps, options=run_options, run_metadata=run_metadata)
+      end = time.time()
+      tf.logging.info("train time: %.2f", end-start)
+      tf.logging.info("speed:%.2f", FLAGS.train_batch_size*(FLAGS.num_train_steps+FLAGS.num_warmup_steps)/(end-start))
+      node_time_util.get_node_time(run_metadata)
+    else:
+    	start = time.time()
+    	estimator.train(input_fn=train_input_fn, max_steps=FLAGS.num_train_steps)
+    	end = time.time()
+    	tf.logging.info("train time: %.2f", end-start)
+    	tf.logging.info("speed:%.2f", FLAGS.train_batch_size*(FLAGS.num_train_steps+FLAGS.num_warmup_steps)/(end-start))
   if FLAGS.do_eval:
     tf.logging.info("***** Running evaluation *****")
     tf.logging.info("  Batch size = %d", FLAGS.eval_batch_size)
