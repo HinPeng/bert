@@ -117,3 +117,5 @@ dmypy.json
 
 # output
 output/pretraining_output/
+
+.vscode

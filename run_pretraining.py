@@ -39,6 +39,12 @@ FLAGS = flags.FLAGS
 
 ## Required parameters
 
+flags.DEFINE_boolean('use_unified_memory', None,
+                     'If True, allocate unified memory enabling larger models '
+                     'to fit in available device RAM.')
+flags.DEFINE_integer("build_cost_model", 0, "build cost model number in graph option")
+flags.DEFINE_integer("build_cost_model_after", 0, "build cost model number in graph option")
+
 flags.DEFINE_bool("lognode_time", False, "Whether to record runmetadata.")
 
 flags.DEFINE_bool("openai_opt", False, "Whether to use openai optimizer")
@@ -476,6 +482,13 @@ def main(_):
 
   if FLAGS.allow_growth:
     session_config.gpu_options.allow_growth = True
+
+  if FLAGS.build_cost_model > 0:
+    session_config.graph_options.build_cost_model = FLAGS.build_cost_model
+    session_config.graph_options.build_cost_model_after = FLAGS.build_cost_model_after
+  
+  if FLAGS.use_unified_memory:
+    session_config.gpu_options.experimental.use_unified_memory = True
 
   run_config = tf.contrib.tpu.RunConfig(
       session_config=session_config,
